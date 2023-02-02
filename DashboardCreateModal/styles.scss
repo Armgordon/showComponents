@@ -1,0 +1,89 @@
+@import '@components/common/utils/hideHelpers.scss';
+@import '@components/common/palette/styles.scss';
+@import '@components/common/utils/flexAlign.scss';
+
+.root {
+  width: 1200px;
+  height: 740px;
+}
+
+.content {
+  position: relative;
+
+  display: flex;
+
+  box-sizing: border-box;
+  padding: 34px 68px;
+}
+
+.leftSide,
+.rightSide {
+  display: flex;
+  flex-direction: column;
+
+  box-sizing: border-box;
+
+  h3 {
+    margin: 0 0 32px 0;
+    padding: 0;
+  }
+
+  h4 {
+    margin: 0 0 12px 0;
+
+    font-size: 12px;
+    font-weight: 600;
+    font-style: normal;
+    line-height: 18px;
+  }
+}
+
+.leftSide {
+  width: 350px;
+
+  border-right: 1px solid;
+
+  @include use-border-color('blue-stroke-and-border');
+}
+
+.rightSide {
+  width: 750px;
+  padding-left: 84px;
+}
+
+.errorMessage {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+
+  width: calc(100% - 20px);
+  height: 12px;
+
+  font-size: 12px;
+  line-height: 12px;
+
+  @include use-text-color('avatar-red');
+  @include use-hidden();
+}
+
+.widgetSection {
+  width: 220px;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.button {
+  margin-right: 16px;
+
+  &:last-child {
+    margin-right: 0;
+  }
+}
+
+.radioControl {
+  height: 18px;
+}

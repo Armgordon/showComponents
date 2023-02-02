@@ -1,0 +1,31 @@
+@import '@components/common/palette/styles.scss';
+@import '@components/common/utils/flexAlign.scss';
+
+.root {
+  position: relative;
+  z-index: 2;
+
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.selectContainer {
+  border-radius: 4px;
+
+  @include use-background-color('white');
+  @include use-border-color('blue-stroke-and-border');
+  @include use-box-shadow('medium');
+}
+
+.shadowRootContainer {
+  position: relative;
+
+  display: flex;
+  overflow-x: hidden;
+  overflow-y: auto;
+  align-items: flex-end;
+
+  flex-direction: column;
+
+  max-height: 360px;
+}
