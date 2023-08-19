@@ -1,31 +1,47 @@
 @import '@components/common/palette/styles.scss';
-@import '@components/common/utils/flexAlign.scss';
 
 .root {
-  position: relative;
-  z-index: 2;
+  overflow: hidden;
 
-  box-sizing: border-box;
-  width: 100%;
+  max-width: 543px;
 }
 
-.selectContainer {
-  border-radius: 4px;
+.optionName {
+  height: 36px;
 
-  @include use-background-color('white');
-  @include use-border-color('blue-stroke-and-border');
-  @include use-box-shadow('medium');
+  border-bottom: 1px solid;
+
+  @include use-mcp-border-color('blue-stroke-and-border');
+
+  p {
+    overflow-x: hidden;
+
+    width: calc(100% - 32px);
+    margin: 0;
+
+    white-space: nowrap;
+    text-overflow: ellipsis;
+
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 18px;
+  }
 }
 
-.shadowRootContainer {
-  position: relative;
-
+.noOptionMessage {
   display: flex;
-  overflow-x: hidden;
-  overflow-y: auto;
-  align-items: flex-end;
 
-  flex-direction: column;
+  height: 36px;
+  padding-left: 32px;
 
-  max-height: 360px;
+  border-bottom: 1px solid;
+
+  font-size: 12px;
+  font-weight: 500;
+  font-style: normal;
+  line-height: 18px;
+  align-content: center;
+  flex-wrap: wrap;
+
+  @include use-mcp-border-color('blue-stroke-and-border');
 }

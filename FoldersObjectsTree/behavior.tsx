@@ -1,710 +1,272 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import type { ReactElement } from 'react';
-import root from 'react-shadow';
-import { useDispatch, useSelector } from 'react-redux';
-import type { TreeNodeInfo } from '@blueprintjs/core';
-import { Classes, Tree } from '@blueprintjs/core';
-import type { Folder, FieldFoldersAndObjects, ChildFieldObject, ResourceId, Resource } from '@domain';
-import { ProviderResourceType } from '@domain';
-import type { State } from '@store';
-import {
-  getExpandedFolders,
-  getNodesCollection,
-  getProviderId,
-  addChildFolders,
-  setProviderNodesCollection,
-  setStoreExpandedFolders,
-} from '@store/providerFileSystem';
-import ComplexIcon from '@components/common/ComplexIcon';
-import {
-  useBlankNode,
-  useShadowRootStyles,
-} from '@components/common/ConstructModal/FoldersObjectsSelect/customHooks/ShadowRootTreeHooks';
-import type { ComplexIconType } from '@components/common/ComplexIcon';
-import {
-  useCurrentFolder,
-  useCurrentFolderId,
-  useFolderChildList,
-  useGetResources,
-} from '@components/common/customHooks';
-import {
-  getProviderResourceLabelWithNoName,
-  getProviderResourceTypeDisplayName,
-  PROVIDERS_DIGITAL_CODE_LENGTH,
-  PROVIDER_RESOURCE_TYPES_DIGITAL_ID,
-} from '@components/common/utils';
-import { isFolder } from '@utils/guards';
-import classnames from 'classnames';
-import type { AttachedResource } from '@domain/provider/fileSystem';
+import { useCallback } from 'react';
+import type { FieldFoldersAndObjects, ChildFieldObject, ChildFieldFolder, Folder, AttachedResource } from '@domain';
+import { useInitialSelectedFoldersState, useProviderResources } from '@components/common/customHooks';
+import { useResourceTypeByIdPostfix } from '@components/serviceDiscovery/ProviderPage/utils';
+import { useClearTreeNodeIdentifier, useGetOptionId } from '@components/common/objectTrees/customTreeHooks';
+import { getResourceTypeArg } from '@components/common/ModalManager/utils';
+import { checkFolderContainsResource } from '@components/common/utils/resources';
+import type { UseFolderMatchSearchParams } from '@components/common/objectTrees/FoldersObjectsTree/types';
+import type { SelectedState } from '../types';
 
-import type {
-  CheckContainsOfChildFieldObjectParams,
-  IFormValuesState,
-  ISelectedObjects,
-  NodePath,
-  UseHandlersParams,
-  UseHandlersResult,
-  UseMakeNodeListParams,
-  UseNodesParams,
-  UseShadowRootFoldersObjectsTreeParams,
-} from './types';
-import styles from './styles.scss';
-
-/* eslint-disable camelcase */
-
-/** Function which concats Synthethic ID of resource with provider's ID.
- * Then resulted string can be parsed to receive objects from certain provider
- * @param resourceId - see {@link ProviderResourceType}
- * @param providerId - ID of provider
- * @return string like '11111111298', where '11111111' is synthetic Id of grouped resources and '298' is provider ID
+/**
+ * Hook to get index of current provider in formValue {@link FieldFoldersAndObjects}
+ * @param formValue value of the selecting folders and objects form
+ * @param providerId - ID of current provider
+ * @returns index of current provider in the form, or `-1`, if current provider is not in the form
  */
-const getGroupId = (resourceId: ResourceId, providerId: number | null): string => {
-  if (typeof resourceId === 'number') return '';
-  return `${PROVIDER_RESOURCE_TYPES_DIGITAL_ID.get(resourceId)}${providerId?.toString()}`;
-};
+const useGetCurrentProviderFormValueIndex = (formValue: FieldFoldersAndObjects[], providerId: number): number =>
+  formValue.findIndex((value) => value.provider_id === providerId);
 
-/** Function which parses string with Synthetic Id of grouped objects and provider Id
- * @params nodeId - string like '11111111298', where '11111111' is synthetic Id of grouped resources and '298' is provider ID or ID of the objects (number)
- * @return if nodeId is Synthetic Id, return synthetic ID of grouped objects. If nodeId is number, returns null
+/**
+ * Hook to get object of {@link FieldFoldersAndObjects} related to current provider
+ * @param providerId - ID of current provider
+ *
+ * Params of returned callback:
+ * @param folders - array of selected folders {@link ChildFieldFolder}[]
+ * @param objects - array of selected resources {@link ChildFieldObject}[]
+ * @returns object of {@link FieldFoldersAndObjects} related to current provider
  */
-const getProviderResourceTypeOfNodeId = (nodeId: string | number) =>
-  typeof nodeId === 'string' ? Number(nodeId.slice(0, PROVIDERS_DIGITAL_CODE_LENGTH)) : null;
-
-/** Hook which transform Resources of Current provider to the TreeNode
- * @return Array of {@link TreeNodeInfo} with the provider's resources to the select form
- */
-export const useGetResourcesNodes = (): TreeNodeInfo[] => {
-  const { providerId, grouped, virtual_machines, networks, storages } = useGetResources();
-
-  return grouped.map((resource) => ({
-    id: getGroupId(resource.id, providerId),
-    label: getProviderResourceTypeDisplayName(resource.id, true),
-    hasCaret: !!virtual_machines.length || !!networks.length || !!storages.length,
-    nodeData: {
+const useGetEmptyProviderFormValue = (
+  providerId: number,
+): (({ folders, objects }: { folders?: ChildFieldFolder[]; objects?: ChildFieldObject[] }) => FieldFoldersAndObjects) =>
+  useCallback(
+    ({ folders, objects }: { folders?: ChildFieldFolder[]; objects?: ChildFieldObject[] }) => ({
       provider_id: providerId,
-      networks,
-      storages,
-      virtual_machines,
-    },
-  }));
+      folders: folders ?? [],
+      objects: objects ?? [],
+    }),
+    [providerId],
+  );
+
+/**
+ * Hook to get selected folders and objects in provider
+ * @param formValue value of the selecting folders and objects form
+ * @param providerId - ID of current provider
+ * @returns - see {@link SelectedState}
+ */
+export const useInitialSelectedFoldersObjects = (
+  formValue: FieldFoldersAndObjects[],
+  providerId: number,
+): SelectedState => {
+  const indexOfCurrentProviderFormValue = useGetCurrentProviderFormValueIndex(formValue, providerId);
+  const emptyProviderFormValueGetter = useGetEmptyProviderFormValue(providerId);
+
+  const selectedState = formValue[indexOfCurrentProviderFormValue] ?? emptyProviderFormValueGetter({});
+
+  return useInitialSelectedFoldersState(selectedState);
 };
 
 /**
- * Hook which returns loaded nodes collection made from all used folders in current tree
- * @param isGroupedObjectsView - flag that indicates that select form is in `Objects` state
- * @returns Array of nodes {@link TreeNodeInfo} made from redux-store folder items saved at store
+ * Hook returns callback for selecting folder
+ * @param formValue value of the selecting folders and objects form
+ * @param formOnChange handler for setting new set of selected folders
+ * @param providerId - ID of current provider
  */
-export const useNodesCollection = (isGroupedObjectsView?: boolean): TreeNodeInfo[] | null => {
-  const nodesCollectionSelector = useCallback((state: State): TreeNodeInfo[] | null => getNodesCollection(state), []);
-  const foldersCollection = useSelector(nodesCollectionSelector) || [];
-  const resourcesNodes = useGetResourcesNodes();
+export const useSelectFolder = (
+  formValue: FieldFoldersAndObjects[],
+  formOnChange: (value: FieldFoldersAndObjects[]) => unknown,
+  providerId: number,
+): ((id: string) => void) => {
+  const parseTreeNodeId = useClearTreeNodeIdentifier();
+  const indexOfCurrentProviderFormValue = useGetCurrentProviderFormValueIndex(formValue, providerId);
+  const emptyProviderFormValueGetter = useGetEmptyProviderFormValue(providerId);
+  const selectedFolders = useInitialSelectedFoldersObjects(formValue, providerId).folders;
 
-  return isGroupedObjectsView ? resourcesNodes : foldersCollection;
-};
+  return useCallback(
+    (id: string) => {
+      const newFormValue = [...formValue];
+      const formContainsCurrentProvider = indexOfCurrentProviderFormValue !== -1;
 
-/** Hook which return callback to create folder node {@link TreeNodeInfo} from {@link Folder}
- * @return Callback which receives child folders list and selected folders destructed state from {@link IFormValuesState} */
-export const useMakeFolderNode = (): ((value: Folder[] | null, formState: IFormValuesState) => TreeNodeInfo[]) =>
-  useCallback((childFolders: Folder[] | null, { selectedFolders }: IFormValuesState) => {
-    if (!childFolders) return [];
-    const result: TreeNodeInfo[] = [];
+      const newSelectedFolders = selectedFolders.has(id) ? selectedFolders.delete(id) : selectedFolders.add(id);
+      const resultFolders = newSelectedFolders.toArray().map((item) => ({
+        id: parseTreeNodeId(item),
+        providerId,
+      }));
 
-    childFolders.forEach((childFolder) => {
-      const isSelected = selectedFolders.includes(childFolder?.id) || false;
-      const hasCaret =
-        childFolder.has_child ||
-        childFolder.networks.length > 0 ||
-        childFolder.storages.length > 0 ||
-        childFolder.virtual_machines.length > 0;
-
-      result.push({
-        id: childFolder.id,
-        icon: <ComplexIcon type="folder" isChecked={isSelected} />,
-        label: childFolder.name,
-        isSelected,
-        hasCaret,
-        nodeData: {
-          id: childFolder.id,
-          provider_id: childFolder.provider_id,
-          has_child: childFolder.has_child,
-          networks: childFolder.networks,
-          storages: childFolder.storages,
-          virtual_machines: childFolder.virtual_machines,
-        },
-      });
-    });
-
-    return result;
-  }, []);
-
-/**
- * Hook which returns available options for folders and objects tree element. We use `useMemo` instead of
- * constant to save possibility to create dynamic options list generation.
- * It recursively put child folder nodes and resources in parent `childNodes` field
- * @returns All available tree nodes {@link TreeNodeInfo}
- */
-export const useMakeNodeList = ({
-  nodesCollection,
-  childNodes,
-  formValuesState: { selectedFolders, selectedObjects },
-  expandedFolders,
-  isGroupedObjectsView,
-  search,
-}: UseMakeNodeListParams): TreeNodeInfo[] => {
-  const currentFolderId = useCurrentFolderId();
-
-  const currentFolder = useCurrentFolder(currentFolderId);
-
-  const { providerId, virtual_machines, networks, storages } = useGetResources();
-  const searchValue = search?.toLowerCase() ?? '';
-
-  const getNodesOutOfResources = useCallback(
-    (resourceType: ProviderResourceType, groupedObjectsView: boolean) => {
-      let filteringObjects: AttachedResource[] | Resource[] = [];
-      let objectsForSelection: number[] = [];
-      let iconSign = '';
-      switch (resourceType) {
-        case ProviderResourceType.VIRTUAL_MACHINE:
-          filteringObjects = groupedObjectsView ? virtual_machines : currentFolder?.virtual_machines || [];
-          objectsForSelection = selectedObjects.vm;
-          iconSign = 'v';
-          break;
-        case ProviderResourceType.NETWORK:
-          filteringObjects = groupedObjectsView ? networks : currentFolder?.networks || [];
-          objectsForSelection = selectedObjects.networks;
-          iconSign = 'n';
-          break;
-        case ProviderResourceType.STORAGE:
-          filteringObjects = groupedObjectsView ? storages : currentFolder?.storages || [];
-          objectsForSelection = selectedObjects.storages;
-          iconSign = 's';
-          break;
-        default:
-          break;
+      if (formContainsCurrentProvider) {
+        newFormValue[indexOfCurrentProviderFormValue] = {
+          ...newFormValue[indexOfCurrentProviderFormValue],
+          folders: resultFolders,
+        };
+      } else {
+        const selectedState = emptyProviderFormValueGetter({ folders: resultFolders });
+        newFormValue.push(selectedState);
       }
 
-      const filteringCallback = (resource: AttachedResource | Resource) => {
-        if ('provider' in resource) {
-          return resource.provider === providerId && resource.name.toLowerCase().includes(searchValue);
-        }
-        return resource.name.toLowerCase().includes(searchValue);
-      };
-
-      return filteringObjects.filter(filteringCallback).map((resource) => {
-        const isSelected = objectsForSelection.includes(Number(resource.id));
-        return {
-          id: `${resource.id}${iconSign}`,
-          icon: <ComplexIcon type={resourceType} isChecked={isSelected} />,
-          label: resource.name || getProviderResourceLabelWithNoName(resource.id, ProviderResourceType.VIRTUAL_MACHINE),
-          isSelected,
-          nodeData: resource,
-        };
-      });
+      formOnChange(newFormValue);
     },
     [
       providerId,
-      searchValue,
-      virtual_machines,
-      networks,
-      storages,
-      selectedObjects.vm,
-      selectedObjects.networks,
-      selectedObjects.storages,
-      currentFolder?.networks,
-      currentFolder?.storages,
-      currentFolder?.virtual_machines,
+      emptyProviderFormValueGetter,
+      formOnChange,
+      formValue,
+      indexOfCurrentProviderFormValue,
+      parseTreeNodeId,
+      selectedFolders,
+    ],
+  );
+};
+
+/**
+ * Hook returns callback for selecting resource
+ * @param formValue value of the selecting folders and objects form
+ * @param formOnChange handler for setting new set of selected resources
+ * @param providerId - ID of current provider
+ */
+export const useSelectedResourcesState = (
+  formValue: FieldFoldersAndObjects[],
+  formOnChange: (value: FieldFoldersAndObjects[]) => unknown,
+  providerId: number,
+): ((id: string) => void) => {
+  const parseTreeNodeId = useClearTreeNodeIdentifier();
+  const indexOfCurrentProviderFormValue = useGetCurrentProviderFormValueIndex(formValue, providerId);
+  const getResourceType = useResourceTypeByIdPostfix();
+  const selectedResources = useInitialSelectedFoldersObjects(formValue, providerId).resources;
+  const emptyProviderFormValueGetter = useGetEmptyProviderFormValue(providerId);
+
+  const toggleSelectOption = useCallback(
+    (id: string) => {
+      const newFormValue = [...formValue];
+      const formContainsCurrentProvider = indexOfCurrentProviderFormValue !== -1;
+
+      const newSelectedResources = selectedResources.has(id) ? selectedResources.delete(id) : selectedResources.add(id);
+      const resultResources = newSelectedResources.toArray().map((item) => ({
+        id: parseTreeNodeId(item),
+        type: getResourceType(item),
+        providerId,
+      }));
+
+      if (formContainsCurrentProvider) {
+        newFormValue[indexOfCurrentProviderFormValue] = {
+          ...newFormValue[indexOfCurrentProviderFormValue],
+          objects: resultResources,
+        };
+      } else {
+        const selectedState = emptyProviderFormValueGetter({ objects: resultResources });
+        newFormValue.push(selectedState);
+      }
+
+      formOnChange(newFormValue);
+    },
+    [
+      providerId,
+      formValue,
+      indexOfCurrentProviderFormValue,
+      selectedResources,
+      formOnChange,
+      parseTreeNodeId,
+      getResourceType,
+      emptyProviderFormValueGetter,
     ],
   );
 
-  const objects = useMemo(() => {
-    const addNewChildrenToParentNode = (foldersNodeCollection: TreeNodeInfo[]): TreeNodeInfo[] =>
-      foldersNodeCollection.map((node) => {
-        const groupedResourcesSyntheticId = getProviderResourceTypeOfNodeId(node.id);
-
-        const vmObjects: TreeNodeInfo[] = getNodesOutOfResources(ProviderResourceType.VIRTUAL_MACHINE, true);
-        const networkObjects: TreeNodeInfo[] = getNodesOutOfResources(ProviderResourceType.NETWORK, true);
-        const storagesObjects: TreeNodeInfo[] = getNodesOutOfResources(ProviderResourceType.STORAGE, true);
-
-        let selectedResources: number[] = [];
-        let iconType: ComplexIconType = 'folder';
-        let innerChildNodes: TreeNodeInfo[] = [];
-
-        switch (groupedResourcesSyntheticId) {
-          case PROVIDER_RESOURCE_TYPES_DIGITAL_ID.get(ProviderResourceType.VIRTUAL_MACHINE):
-            selectedResources = selectedObjects.vm;
-            innerChildNodes = vmObjects;
-            iconType = ProviderResourceType.VIRTUAL_MACHINE;
-            break;
-          case PROVIDER_RESOURCE_TYPES_DIGITAL_ID.get(ProviderResourceType.NETWORK):
-            selectedResources = selectedObjects.networks;
-            iconType = ProviderResourceType.NETWORK;
-            innerChildNodes = networkObjects;
-            break;
-          case PROVIDER_RESOURCE_TYPES_DIGITAL_ID.get(ProviderResourceType.STORAGE):
-            selectedResources = selectedObjects.storages;
-            iconType = ProviderResourceType.STORAGE;
-            innerChildNodes = storagesObjects;
-            break;
-          default:
-            break;
-        }
-
-        const isSelected =
-          selectedFolders.includes(Number(node.id)) ||
-          innerChildNodes.every((childNode) => selectedResources.includes(Number(childNode.id)));
-        const icon = <ComplexIcon type={iconType} isChecked={isSelected} />;
-        const isExpanded = expandedFolders.includes(Number(node.id));
-
-        return {
-          ...node,
-          icon,
-          isExpanded,
-          isSelected,
-          childNodes: innerChildNodes,
-        };
-      });
-    return addNewChildrenToParentNode(nodesCollection);
-  }, [
-    nodesCollection,
-    selectedObjects.networks,
-    selectedObjects.storages,
-    selectedObjects.vm,
-    selectedFolders,
-    expandedFolders,
-    getNodesOutOfResources,
-  ]);
-
-  const folders = useMemo(() => {
-    const networkObjects: TreeNodeInfo[] = getNodesOutOfResources(ProviderResourceType.NETWORK, false);
-    const storageObjects: TreeNodeInfo[] = getNodesOutOfResources(ProviderResourceType.STORAGE, false);
-    const vmObjects: TreeNodeInfo[] = getNodesOutOfResources(ProviderResourceType.VIRTUAL_MACHINE, false);
-
-    const addNewChildrenToParentNode = (foldersNodeCollection: TreeNodeInfo[]): TreeNodeInfo[] =>
-      foldersNodeCollection.map((node) => {
-        const isSelected = selectedFolders.includes(Number(node.id));
-        const isExpanded = expandedFolders.includes(Number(node.id));
-        const childNodesList = [...childNodes, ...networkObjects, ...storageObjects, ...vmObjects];
-
-        if (node.id === currentFolderId) {
-          return {
-            ...node,
-            icon: <ComplexIcon type="folder" isChecked={isSelected} />,
-            isExpanded,
-            isSelected,
-            childNodes: childNodesList,
-          };
-        }
-        if (node.childNodes?.length) {
-          return {
-            ...node,
-            icon: <ComplexIcon type="folder" isChecked={isSelected} />,
-            isExpanded,
-            isSelected,
-            childNodes: addNewChildrenToParentNode(node.childNodes),
-          };
-        }
-        if (typeof node.id === 'string') {
-          const nodeClearId = Number(node.id.slice(0, -1));
-          const iconSign = node.id.slice(-1);
-
-          let isObjectSelected: boolean;
-          let iconType: ComplexIconType;
-
-          switch (iconSign) {
-            case 'n':
-              iconType = ProviderResourceType.NETWORK;
-              isObjectSelected = selectedObjects.networks.includes(nodeClearId);
-              break;
-            case 's':
-              iconType = ProviderResourceType.STORAGE;
-              isObjectSelected = selectedObjects.storages.includes(nodeClearId);
-              break;
-            case 'v':
-              iconType = ProviderResourceType.VIRTUAL_MACHINE;
-              isObjectSelected = selectedObjects.vm.includes(nodeClearId);
-              break;
-            default:
-              iconType = 'folder';
-              isObjectSelected = false;
-          }
-
-          return {
-            ...node,
-            icon: <ComplexIcon type={iconType} isChecked={isObjectSelected} />,
-            isSelected: isObjectSelected,
-          };
-        }
-        return {
-          ...node,
-          icon: <ComplexIcon type="folder" isChecked={isSelected} />,
-          isSelected,
-          isExpanded,
-        };
-      });
-    return addNewChildrenToParentNode(nodesCollection);
-  }, [
-    nodesCollection,
-    selectedObjects.networks,
-    selectedObjects.storages,
-    selectedObjects.vm,
-    selectedFolders,
-    expandedFolders,
-    currentFolderId,
-    childNodes,
-    getNodesOutOfResources,
-  ]);
-  return isGroupedObjectsView ? objects : folders;
+  return toggleSelectOption;
 };
 
 /**
- *Hook which make list of all nodes to render in folders and objects tree element
- * @param formValuesState current state of selected folders and objects from react-hook-form
- * @param expandedFolders Array of expanded folders in tree
- * @param isGroupedObjectsView - flag that indicates that select form is in `Objects` state
- * @param search - Search value to filter nodes
- * @return list of nodes to render in folders and objects tree element
+ * Hook returns callback for selecting grouped resources
+ * @param formValue value of the selecting folders and objects form
+ * @param formOnChange handler for setting new set of selected resources
+ * @param providerId - ID of current provider
  */
-export const useNodes = ({
-  formValuesState,
-  expandedFolders,
-  isGroupedObjectsView,
-  search,
-}: UseNodesParams): TreeNodeInfo[] => {
-  const nodesCollection = useNodesCollection(isGroupedObjectsView) || [];
-  const storeChildFolders = useFolderChildList();
-  const makeFolderNode = useMakeFolderNode();
+export const useSelectedGroupedResourceState = (
+  formValue: FieldFoldersAndObjects[],
+  formOnChange: (value: FieldFoldersAndObjects[]) => unknown,
+  providerId: number,
+): ((id: string) => void) => {
+  const resources = useProviderResources(providerId);
+  const indexOfCurrentProviderFormValue = useGetCurrentProviderFormValueIndex(formValue, providerId);
+  const selectedResources = useInitialSelectedFoldersObjects(formValue, providerId).resources;
+  const emptyProviderFormValueGetter = useGetEmptyProviderFormValue(providerId);
+  const getOptionId = useGetOptionId();
 
-  const childNodes = storeChildFolders ? makeFolderNode(storeChildFolders, formValuesState) : [];
+  const toggleSelectOption = useCallback(
+    (groupedResourceType: string) => {
+      const newFormValue = [...formValue];
+      const formContainsCurrentProvider = indexOfCurrentProviderFormValue !== -1;
 
-  return useMakeNodeList({
-    nodesCollection,
-    childNodes,
-    formValuesState,
-    expandedFolders,
-    isGroupedObjectsView,
-    search,
-  });
-};
+      const resourceType = getResourceTypeArg(groupedResourceType);
+      const childResources = resources[resourceType];
 
-/**
- * Hook which create click handlers to folders and object tree element
- * @param formValue Values from react-hook-form field `folders_and_objects`
- * @param formOnChange Updater of value from react-hook-form
- * @param resultNodes Current node list. Use in case of expand new folder
- * @param setExpandedFolders Updater of expanded folders state
- * @param isGroupedObjectsView Flag that indicates should component displays objects by folders or in groups.
- * @return boolean value in case of param object type is {@link Folder}
- */
-export const useHandlers = ({
-  formValue,
-  formOnChange,
-  resultNodes,
-  setExpandedFolders,
-  isGroupedObjectsView,
-}: UseHandlersParams): UseHandlersResult => {
-  const dispatch = useDispatch();
-  const providerId = useSelector(getProviderId);
+      const allResourcesAreSelected = childResources.every((resource) => {
+        const idOfChildResource = getOptionId(resource, resourceType);
+        return selectedResources.has(idOfChildResource);
+      });
 
-  const checkContainsOfChildFieldObject = ({
-    ChildFieldObjects,
-    type,
-    id,
-    name,
-  }: CheckContainsOfChildFieldObjectParams) => {
-    let resultedObjects: ChildFieldObject[] = [...ChildFieldObjects];
-    const isInCurrentItem = resultedObjects.find((object) => object.type === type && object.id === id);
-    if (!isInCurrentItem) {
-      resultedObjects.push({ id, type, name } as ChildFieldObject);
-    } else {
-      resultedObjects = resultedObjects.filter((object) => !(object.type === type && object.id === id));
-    }
-    return resultedObjects;
-  };
+      const resultResources = childResources.map((resource) => ({
+        ...resource,
+        id: Number(resource.id),
+        providerId,
+      }));
 
-  const handleNodeClick = React.useCallback(
-    (node: TreeNodeInfo, nodePath: NodePath) => {
-      const { nodeData } = node;
+      if (formContainsCurrentProvider) {
+        const previousSelectedObjects = newFormValue[indexOfCurrentProviderFormValue].objects;
+        const newSelectedObjects = allResourcesAreSelected
+          ? previousSelectedObjects.filter(
+              (oldObject) => !resultResources.some((newObject) => newObject.id === oldObject.id),
+            )
+          : [...previousSelectedObjects, ...resultResources];
 
-      const result: FieldFoldersAndObjects[] = [...(formValue || [])];
-      const currentProviderIndex = result.findIndex((item) => item.provider_id === providerId);
-
-      const resultedItem: FieldFoldersAndObjects =
-        currentProviderIndex < 0
-          ? ({ provider_id: providerId, folders: [], objects: [] } as FieldFoldersAndObjects)
-          : result[currentProviderIndex];
-
-      const getParentNodeData = (): Folder => Tree.nodeFromPath(nodePath.slice(0, -1), resultNodes).nodeData as Folder;
-      if (isFolder(nodeData as Folder)) {
-        const formFolder = resultedItem.folders.find((folder) => folder.id === Number(node.id));
-        if (!formFolder) {
-          resultedItem.folders.push({ id: Number(node.id), name: node.label.toString() });
-          if (isGroupedObjectsView && node.childNodes) {
-            node.childNodes.forEach((childNode) => {
-              const nodeClearId = Number(childNode.id.toString().slice(0, -1));
-              const name = typeof childNode.label === 'string' ? childNode.label : '';
-              const iconSign = childNode.id.toString().slice(-1);
-
-              let objectType: ComplexIconType;
-              switch (iconSign) {
-                case 'n':
-                  objectType = ProviderResourceType.NETWORK;
-                  break;
-                case 's':
-                  objectType = ProviderResourceType.STORAGE;
-                  break;
-                case 'v':
-                default:
-                  objectType = ProviderResourceType.VIRTUAL_MACHINE;
-                  break;
-              }
-              resultedItem.objects.push({
-                id: nodeClearId,
-                name,
-                type: objectType,
-              });
-            });
-          }
-        } else {
-          resultedItem.folders = resultedItem.folders.filter((folder) => folder.id !== Number(node.id));
-          if (isGroupedObjectsView && node.childNodes) {
-            resultedItem.objects = resultedItem.objects.filter(
-              (object) =>
-                !node.childNodes?.find((childNode) => {
-                  const nodeClearId = Number(childNode.id.toString().slice(0, -1));
-                  return object.id === nodeClearId;
-                }),
-            );
-          }
-        }
+        newFormValue[indexOfCurrentProviderFormValue] = {
+          ...newFormValue[indexOfCurrentProviderFormValue],
+          objects: newSelectedObjects,
+        };
       } else {
-        // Обработка объектов
-        const parentFolder = getParentNodeData();
-        let currentType: ProviderResourceType;
-        const nodeClearId = Number(node.id.toString().slice(0, -1));
-        const nodeName = typeof node.label === 'string' ? node.label : '';
-
-        if (
-          parentFolder.networks.find((item) => item.id === nodeClearId && (item.name ? item.name === node.label : true))
-        ) {
-          currentType = ProviderResourceType.NETWORK;
-          resultedItem.objects = checkContainsOfChildFieldObject({
-            ChildFieldObjects: resultedItem.objects,
-            type: currentType,
-            id: Number(nodeClearId),
-            name: nodeName,
-          });
-        }
-
-        if (
-          parentFolder.storages.find((item) => item.id === nodeClearId && (item.name ? item.name === node.label : true))
-        ) {
-          currentType = ProviderResourceType.STORAGE;
-          resultedItem.objects = checkContainsOfChildFieldObject({
-            ChildFieldObjects: resultedItem.objects,
-            type: currentType,
-            id: Number(nodeClearId),
-            name: nodeName,
-          });
-        }
-
-        if (
-          parentFolder.virtual_machines.find(
-            (item) => item.id === nodeClearId && (item.name ? item.name === node.label : true),
-          )
-        ) {
-          currentType = ProviderResourceType.VIRTUAL_MACHINE;
-          resultedItem.objects = checkContainsOfChildFieldObject({
-            ChildFieldObjects: resultedItem.objects,
-            type: currentType,
-            id: Number(nodeClearId),
-            name: nodeName,
-          });
-        }
+        const selectedState = emptyProviderFormValueGetter({ objects: resultResources });
+        newFormValue.push(selectedState);
       }
-
-      if (currentProviderIndex < 0) {
-        result.push(resultedItem);
-      } else result[currentProviderIndex] = resultedItem;
-
-      if (formOnChange && formValue) {
-        formOnChange(result);
-      }
-
-      if (!isGroupedObjectsView) dispatch(setProviderNodesCollection(resultNodes));
+      formOnChange(newFormValue);
     },
-    [dispatch, formOnChange, formValue, providerId, resultNodes, isGroupedObjectsView],
+    [
+      providerId,
+      emptyProviderFormValueGetter,
+      formOnChange,
+      formValue,
+      getOptionId,
+      indexOfCurrentProviderFormValue,
+      resources,
+      selectedResources,
+    ],
   );
 
-  const handleNodeCollapse = React.useCallback(
-    (_node: TreeNodeInfo) => {
-      setExpandedFolders((prevState) => prevState.filter((id) => id !== Number(_node.id)));
-    },
-    [setExpandedFolders],
-  );
-
-  const handleNodeExpand = React.useCallback(
-    (_node: TreeNodeInfo) => {
-      if (!isGroupedObjectsView) {
-        dispatch(setProviderNodesCollection(resultNodes));
-        dispatch(addChildFolders(Number(_node.id)));
-      }
-      setExpandedFolders((prevState) => [...prevState, Number(_node.id)]);
-    },
-    [dispatch, resultNodes, setExpandedFolders, isGroupedObjectsView],
-  );
-
-  return {
-    handleNodeClick,
-    handleNodeCollapse,
-    handleNodeExpand,
-  };
-};
-/**
- * Hook which earn value for current provider from form
- * @param formValue Values from react-hook-form field `folders_and_objects`
- * @return Arrays of selected folders and objects for current provider{@link Folder}
- */
-export const useFormValuesState = (formValue?: FieldFoldersAndObjects[]): IFormValuesState => {
-  const providerId = useSelector(getProviderId);
-
-  if (!formValue) return { selectedFolders: [], selectedObjects: {} as ISelectedObjects };
-
-  const currentProviderItem = formValue.find((item) => item.provider_id === providerId);
-  const selectedFolders = currentProviderItem ? currentProviderItem.folders.map((folder) => folder.id) : [];
-  const selectedObjects: ISelectedObjects = { networks: [], storages: [], vm: [] };
-
-  if (currentProviderItem) {
-    currentProviderItem.objects.forEach((object) => {
-      // eslint-disable-next-line default-case
-      switch (object.type) {
-        case ProviderResourceType.NETWORK:
-          selectedObjects.networks.push(object.id);
-          break;
-        case ProviderResourceType.STORAGE:
-          selectedObjects.storages.push(object.id);
-          break;
-        case ProviderResourceType.VIRTUAL_MACHINE:
-          selectedObjects.vm.push(object.id);
-          break;
-      }
-    });
-  }
-
-  return {
-    selectedFolders,
-    selectedObjects,
-  };
+  return toggleSelectOption;
 };
 
 /**
- * Hook which create expand state and state updater to folders and object tree element
- * @return {expandedFolders, setExpandedFolders} state and updater of expanded folders ids
+ * Hook for getting callback to filter folders which match search value
+ * @param search - value of the search
+ * @param foldersFactory Factory function which creates child getter for folder
  */
-export const useExpandFoldersState = (): {
-  expandedFolders: number[];
-  setExpandedFolders: React.Dispatch<React.SetStateAction<number[]>>;
-} => {
-  const expandedFoldersSelector = useCallback((state: State) => getExpandedFolders(state), []);
-  const expandState = useSelector(expandedFoldersSelector) || [];
-  const dispatch = useDispatch();
-
-  const [expandedFolders, setExpandedFolders] = useState<number[]>(expandState);
-  const onUnmount = useCallback(() => {
-    dispatch(setStoreExpandedFolders(expandedFolders));
-  }, [dispatch, expandedFolders]);
-
-  useEffect(() => onUnmount, [onUnmount]);
-
-  return {
-    expandedFolders,
-    setExpandedFolders,
-  };
-};
-
-/** Hook which changes the native style of the container, if there is custom shadow root styles
- * @customStyles - flag that indicates that there is custom shadow root styles
- * @return container classname
- */
-export const useShadowRootContainerClassName = (customStyles?: boolean): string =>
-  classnames({
-    [styles.selectContainer]: !customStyles,
-  });
-
-/** Hook which filters Nodes Tree in accordance to the search input
- * @params nodes - Tree of nodes to filter
- * @searcValue - value of search input
- * @return filtred nodes
- */
-const useGetFilteredNodes = (nodes: TreeNodeInfo[], searchValue?: string): TreeNodeInfo[] => {
-  if (!searchValue || searchValue === '') return nodes;
-
-  const lowerCasedSearchValue = searchValue.toLowerCase() || '';
-
-  const needToShow = (node: TreeNodeInfo, search?: string): boolean =>
-    node.label.toString().toLowerCase().includes(lowerCasedSearchValue) ||
-    (node.childNodes && node.childNodes.some((childNode) => needToShow(childNode, search))) ||
-    false;
-
-  const flatting = (node: TreeNodeInfo) => {
-    const result = node;
-    if (result.childNodes) result.childNodes = result.childNodes.flatMap(flatting);
-    return needToShow(node, lowerCasedSearchValue) ? [node] : [];
-  };
-
-  return nodes.flatMap(flatting);
-};
-
-/**
- * Hook which earn value for current provider from form
- * @param - see {@link UseShadowRootFoldersObjectsTreeParams}
- * @return Tree nodes ReactElement
- */
-export const useShadowRootFoldersObjectsTree = ({
-  formOnChange,
-  formValue,
-  externalShadowRoot,
-  isGroupedObjectsView,
+export const useFolderMatchSearch = ({
   search,
-}: UseShadowRootFoldersObjectsTreeParams): ReactElement => {
-  const shadowRootStyles = useShadowRootStyles();
-  const { expandedFolders, setExpandedFolders } = useExpandFoldersState();
+  foldersFactory,
+}: UseFolderMatchSearchParams): ((folder: Folder) => boolean) => {
+  const filterCallback = useCallback(
+    (folder: Folder): boolean => {
+      if (!search) return true;
 
-  const formStateProps = useFormValuesState(formValue);
-  const nodes = useNodes({ formValuesState: formStateProps, expandedFolders, isGroupedObjectsView, search });
+      if (folder.name.toLowerCase().includes(search.toLowerCase())) return true;
+      if (checkFolderContainsResource(folder, search.toLowerCase())) return true;
 
-  const blankNode = useBlankNode();
-  const filteredNodes = useGetFilteredNodes(nodes, search);
+      const value = foldersFactory(folder);
 
-  const contents = filteredNodes.length > 0 ? filteredNodes : blankNode;
-  const { handleNodeExpand, handleNodeCollapse, handleNodeClick } = useHandlers({
-    formValue,
-    formOnChange,
-    resultNodes: nodes,
-    setExpandedFolders,
-    isGroupedObjectsView,
-  });
-  const shadowRootContainerClassName = useShadowRootContainerClassName(!!externalShadowRoot);
-
-  return (
-    <root.div className={shadowRootContainerClassName}>
-      {shadowRootStyles}
-      {externalShadowRoot}
-      <Tree
-        contents={contents}
-        onNodeClick={handleNodeClick}
-        onNodeCollapse={handleNodeCollapse}
-        onNodeExpand={handleNodeExpand}
-        className={Classes.ELEVATION_0}
-      />
-    </root.div>
+      return value.toChildren().some((childFolderCursor) => filterCallback(childFolderCursor.value));
+    },
+    [foldersFactory, search],
   );
+
+  return filterCallback;
 };
 
-/** Hook which changes the native style of the Select container, if there is custom Select container styles
- * @customStyles - flag that indicates that there is custom Select container styles
- * @return Select container classname
+/**
+ * Hook for getting callback to filter resources which match search value
+ * @param search - value of the search
  */
-export const useSelectContainerClassName = (customStyles?: boolean): string =>
-  classnames({
-    [styles.selectContainer]: !customStyles,
-  });
+export const useFilterResourcesCallback = (search?: string): ((resource: AttachedResource) => boolean) =>
+  useCallback(
+    (resource: AttachedResource) => {
+      if (!search) return true;
+      return resource.name.toLowerCase().includes(search?.toLowerCase());
+    },
+    [search],
+  );
